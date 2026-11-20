@@ -4,6 +4,7 @@ import plotly.express as px
 import streamlit as st
 
 from calculs import (
+    carte_communes,
     charger,
     comparables,
     evolution,
@@ -11,6 +12,7 @@ from calculs import (
     indicateurs,
     par_commune,
     par_section,
+    surface_pour_budget,
     tendance,
     ventes_section,
 )
@@ -21,6 +23,9 @@ from modele import charger_metriques, charger_modele, predire
 BLEU = "#0072B2"
 VERMILLON = "#D55E00"
 NB_COMMUNES = 20
+# Carte, de la moins chère à la plus chère. Orange, bleu ciel et pourpre sont trop clairs
+# sur le fond de carte (< 3:1) : bleu 5,0:1, vert 3,3:1, vermillon 3,7:1, noir 20:1.
+COULEURS_CARTE = [BLEU, "#009E73", VERMILLON, "#000000"]
 TAILLE_TEXTE = 12  # px, minimum pour tout le texte des graphiques
 
 
@@ -65,6 +70,11 @@ def codes_communes_cache():
 @st.cache_data
 def communes_cache(vue, n_min):
     return par_commune(vue, n_min)
+
+
+@st.cache_data
+def carte_cache(vue, n_min):
+    return carte_communes(vue, n_min)
 
 
 @st.cache_data
@@ -123,7 +133,11 @@ with pied:
   {n_min} ventes n'est pas affichée (réglage « Ventes minimum par groupe »).
 - **Ce que DVF ne dit pas** : l'état du logement, l'étage, le DPE, les travaux à prévoir.
   Un prix bas peut cacher un bien à rénover.
-- **Localisation** : la section cadastrale est le niveau le plus fin, pas d'adresse.
+- **Localisation** : la section cadastrale est le niveau le plus fin, pas d'adresse. Sur la
+  carte, chaque cercle est placé à la position médiane des ventes de la commune ; les 4 couleurs
+  sont 4 tranches de même effectif, dont les bornes sont écrites dans la légende.
+- **Surface pour notre budget** : budget ÷ prix médian au m². Ordre de grandeur seulement :
+  ni frais de notaire (environ 7 à 8 % dans l'ancien), ni travaux.
 - **Modèle de prix** : gradient boosting (scikit-learn) sur le type, la commune, la surface,
   les pièces, le terrain et l'année. Validation croisée 5 plis sur
   {nombre(metriques["nb_ventes"])} ventes : erreur médiane
@@ -250,65 +264,144 @@ with onglet_communes:
     # ---------- Indicateurs ----------
 
     ind = indicateurs(vue)
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Ventes correspondantes", nombre(ind["nb_ventes"]))
     col2.metric("Prix médian au m²", f"{nombre(ind['prix_m2_median'])} €/m²")
     col3.metric("Prix médian", f"{nombre(ind['prix_median'])} €")
+    col4.metric(
+        "Surface pour notre budget",
+        f"{nombre(budget_max / ind['prix_m2_median'])} m²",
+        help="Budget ÷ prix médian au m². Indicatif : hors frais de notaire et travaux.",
+    )
 
-    # ---------- Niveau 1 : communes ----------
+    # ---------- Niveau 1 : communes (classement ou carte) ----------
 
-    communes = communes_cache(vue, n_min)
+    communes = surface_pour_budget(communes_cache(vue, n_min), budget_max)
     if communes.empty:
         st.warning(f"Aucune commune n'a au moins {n_min} ventes avec ces critères.")
         st.stop()
 
-    top = communes.head(NB_COMMUNES)
-    moins_chere = top.iloc[0]
-    constat = (
-        f"{moins_chere['nom_commune']} : {nombre(moins_chere['prix_m2_med'])} €/m² médian "
-        f"sur {moins_chere['n']} ventes"
+    affichage = st.segmented_control(
+        "Affichage des communes",
+        ["Classement", "Carte"],
+        default="Classement",
+        required=True,
+        key="affichage",
     )
-    titre = f"{constat}, la moins chère"
-    etiquettes = [f"{nombre(p)} €/m² ({n} ventes)" for p, n in zip(top["prix_m2_med"], top["n"])]
-    fig = px.bar(
-        top.assign(etiquette=etiquettes),
-        x="prix_m2_med",
-        y="nom_commune",
-        orientation="h",
-        text="etiquette",
-        # Plotly ne coupe pas les titres : retour à la ligne pour les écrans étroits.
-        title=f"{constat},<br>la moins chère",
-        labels={"prix_m2_med": "Prix médian (€/m²)", "nom_commune": "Commune", "n": "Ventes"},
-        hover_data={"n": True, "prix_med": ":,.0f", "etiquette": False},
-        color_discrete_sequence=[BLEU],
-    )
-    fig.update_traces(textposition="outside")
-    fig.update_layout(
-        yaxis={"categoryorder": "total descending"},  # la moins chère en haut
-        height=650,
-        margin={"r": 170},
-    )
-    lisible(fig)
 
-    st.subheader(f"Les {len(top)} communes les moins chères au m²")
-    st.caption(
-        "Cliquez sur une barre pour voir le détail de la commune, ou choisissez-la plus bas."
-    )
+    if affichage == "Carte":
+        carte = surface_pour_budget(carte_cache(vue, n_min), budget_max)
+        moins_chere = carte.iloc[0]
+        plus_chere = carte.iloc[-1]
+        constat = (
+            f"{len(carte)} communes, {nombre(carte['n'].sum())} ventes : de "
+            f"{nombre(moins_chere['prix_m2_med'])} €/m² ({moins_chere['nom_commune']})"
+        )
+        suite = f"à {nombre(plus_chere['prix_m2_med'])} €/m² ({plus_chere['nom_commune']})"
+        titre = f"{constat} {suite}"
+        fig = px.scatter_map(
+            carte,
+            lat="latitude",
+            lon="longitude",
+            color="tranche",
+            size="n",
+            size_max=30,
+            hover_name="nom_commune",
+            hover_data={
+                "prix_m2_med": ":,.0f",
+                "n": True,
+                "surface_budget": ":.0f",
+                "tranche": False,
+                "latitude": False,
+                "longitude": False,
+            },
+            custom_data=["nom_commune"],
+            labels={
+                "prix_m2_med": "Prix médian (€/m²)",
+                "n": "Ventes",
+                "surface_budget": "m² pour notre budget",
+                "tranche": "Prix médian au m²",
+            },
+            # Ordre des tranches = ordre des lignes (de la moins chère à la plus chère).
+            category_orders={"tranche": list(dict.fromkeys(carte["tranche"]))},
+            color_discrete_sequence=COULEURS_CARTE,
+            map_style="carto-positron",
+            zoom=7.5,
+            center={"lat": carte["latitude"].median(), "lon": carte["longitude"].median()},
+            title=f"{constat}<br>{suite}",
+        )
+        fig.update_layout(height=650, legend={"title": "Prix médian au m²"})
+        lisible(fig)
+        aide = "Cliquez sur un cercle pour voir le détail de la commune, ou choisissez-la plus bas."
+        alt = (
+            f"Carte des communes du Loiret, chaque cercle coloré selon sa tranche de prix médian "
+            f"au m² (du bleu, la moins chère, au noir) et dimensionné selon le nombre de ventes. "
+            f"{titre}."
+        )
+        config = {"scrollZoom": False}  # sur téléphone, le doigt fait défiler la page, pas la carte
+    else:
+        top = communes.head(NB_COMMUNES)
+        moins_chere = top.iloc[0]
+        constat = (
+            f"{moins_chere['nom_commune']} : {nombre(moins_chere['prix_m2_med'])} €/m² médian "
+            f"sur {moins_chere['n']} ventes"
+        )
+        titre = f"{constat}, la moins chère"
+        etiquettes = [
+            f"{nombre(p)} €/m² ({n} ventes)" for p, n in zip(top["prix_m2_med"], top["n"])
+        ]
+        fig = px.bar(
+            top.assign(etiquette=etiquettes),
+            x="prix_m2_med",
+            y="nom_commune",
+            orientation="h",
+            text="etiquette",
+            # Plotly ne coupe pas les titres : retour à la ligne pour les écrans étroits.
+            title=f"{constat},<br>la moins chère",
+            labels={
+                "prix_m2_med": "Prix médian (€/m²)",
+                "nom_commune": "Commune",
+                "n": "Ventes",
+                "surface_budget": "m² pour notre budget",
+            },
+            hover_data={
+                "n": True,
+                "prix_med": ":,.0f",
+                "surface_budget": ":.0f",
+                "etiquette": False,
+            },
+            custom_data=["nom_commune"],
+            color_discrete_sequence=[BLEU],
+        )
+        fig.update_traces(textposition="outside")
+        fig.update_layout(
+            yaxis={"categoryorder": "total descending"},  # la moins chère en haut
+            height=650,
+            margin={"r": 170},
+        )
+        lisible(fig)
+        aide = "Cliquez sur une barre pour voir le détail de la commune, ou choisissez-la plus bas."
+        alt = (
+            f"Barres horizontales des {len(top)} communes les moins chères au m² pour ces "
+            f"critères. {titre}."
+        )
+        config = None
+
+    st.caption(aide)
     evenement = st.plotly_chart(
         fig,
         on_select="rerun",
         selection_mode="points",
-        key="communes",
-        alt=(
-            f"Barres horizontales des {len(top)} communes les moins chères au m² pour ces critères. "
-            f"{titre}."
-        ),
+        key=f"communes_{affichage}",  # une clé par affichage : chaque graphique garde son état
+        alt=alt,
+        config=config,
     )
 
-    # Un nouveau clic sur une barre choisit la commune dans la liste déroulante.
+    # Un nouveau clic (barre ou cercle) choisit la commune dans la liste déroulante.
     # On retient le dernier clic, sinon il écraserait un choix fait ensuite dans la liste.
+    # Le nom de la commune est dans customdata, pour la barre comme pour le cercle.
     points = evenement.selection.points
-    clic = points[0]["y"] if points else None
+    clic = points[0]["customdata"][0] if points else None
     if clic and clic != st.session_state.get("dernier_clic"):
         st.session_state["commune"] = clic
     st.session_state["dernier_clic"] = clic
@@ -323,6 +416,15 @@ with onglet_communes:
 
     vue_commune = vue[vue["nom_commune"] == commune]
     st.header(commune)
+    ligne = communes[communes["nom_commune"] == commune].iloc[0]
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Ventes", nombre(ligne["n"]))
+    col2.metric("Prix médian au m²", f"{nombre(ligne['prix_m2_med'])} €/m²")
+    col3.metric(f"Surface pour {nombre(budget_max)} €", f"{nombre(ligne['surface_budget'])} m²")
+    st.caption(
+        "Surface = budget ÷ prix médian au m² des ventes de la commune qui correspondent à nos "
+        "critères. Indicatif : sans les frais de notaire (environ 7 à 8 % dans l'ancien) ni travaux."
+    )
 
     col_evo, col_sections = st.columns(2)
 

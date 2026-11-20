@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from calculs import (
+    carte_communes,
     charger,
     comparables,
     evolution,
@@ -12,6 +13,7 @@ from calculs import (
     indicateurs,
     par_commune,
     par_section,
+    surface_pour_budget,
     tendance,
     ventes_section,
 )
@@ -141,3 +143,23 @@ def test_le_modele_bat_la_reference():
     metriques = json.loads((Path(__file__).parent.parent / "metriques.json").read_text())
     assert metriques["modele"]["erreur_mediane"] < metriques["reference"]["erreur_mediane"]
     assert metriques["modele"]["mape"] < metriques["reference"]["mape"]
+
+
+def test_surface_pour_budget():
+    communes = par_commune(petit_jeu(), n_min=3)  # B : 600 €/m², A : 2000 €/m²
+    res = surface_pour_budget(communes, 300_000)
+    assert list(res["surface_budget"]) == [500, 150]
+
+
+def test_carte_communes(ventes):
+    vue = filtrer(ventes, "Maison", 300_000, 0, (2021, 2025))
+    carte = carte_communes(vue, n_min=10)
+    assert (carte["n"] >= 10).all()
+    assert len(carte) == len(par_commune(vue, 10))  # aucune commune perdue
+    # toutes les positions sont dans le Loiret (pas de commune placée ailleurs)
+    assert carte["latitude"].between(47.4, 48.4).all()
+    assert carte["longitude"].between(1.4, 3.2).all()
+    # 4 tranches de taille égale, la moins chère d'abord
+    assert carte["tranche"].nunique() == 4
+    assert carte["tranche"].iloc[0] != carte["tranche"].iloc[-1]
+    assert carte["tranche"].value_counts().max() - carte["tranche"].value_counts().min() <= 1

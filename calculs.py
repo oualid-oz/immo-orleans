@@ -135,3 +135,32 @@ def comparables(
         "prix_m2": "Prix (€/m²)",
     }
     return proches.head(n)[list(colonnes)].rename(columns=colonnes).reset_index(drop=True)
+
+
+def _nombre(x: float) -> str:
+    """1234.5 -> '1 235' (séparateur de milliers à la française)."""
+    return f"{x:,.0f}".replace(",", " ")
+
+
+def carte_communes(vue: pd.DataFrame, n_min: int = 10) -> pd.DataFrame:
+    """Une ligne par commune pour la carte : médianes, position et tranche de prix.
+
+    Position = médiane des coordonnées des ventes (pas d'adresse, seulement la commune).
+    Tranche = quart de la distribution des prix médians au m² (4 classes, avec leurs bornes),
+    pour que la légende se lise en texte et pas seulement en couleur.
+    """
+    communes = par_commune(vue, n_min)
+    positions = vue.groupby("nom_commune")[["latitude", "longitude"]].median().reset_index()
+    resultat = communes.merge(positions, on="nom_commune")
+    if resultat["prix_m2_med"].nunique() < 4:
+        resultat["tranche"] = "toutes les communes"
+        return resultat
+    classes, bornes = pd.qcut(resultat["prix_m2_med"], 4, retbins=True, duplicates="drop")
+    noms = [f"{_nombre(bornes[i])} à {_nombre(bornes[i + 1])} €/m²" for i in range(len(bornes) - 1)]
+    resultat["tranche"] = [noms[code] for code in classes.cat.codes]
+    return resultat
+
+
+def surface_pour_budget(communes: pd.DataFrame, budget: float) -> pd.DataFrame:
+    """Ajoute surface_budget : les m² que le budget achète au prix médian au m² de chaque commune."""
+    return communes.assign(surface_budget=budget / communes["prix_m2_med"])

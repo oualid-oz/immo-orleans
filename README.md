@@ -16,9 +16,11 @@ l'état, ni l'étage, ni le DPE.
 **Framework** : Streamlit + Plotly Express + pandas + scikit-learn, Python 3.12, géré avec `uv`.
 Deux onglets :
 
-- *Où chercher ?* : filtres (type, budget, surface, années, ventes minimum), 3 indicateurs,
-  puis exploration en 3 niveaux : communes (clic sur une barre ou liste) → évolution par année
-  et sections de la commune → ventes individuelles d'une section.
+- *Où chercher ?* : filtres (type, budget, surface, années, ventes minimum), 4 indicateurs
+  dont la surface que le budget permet d'acheter, puis exploration en 3 niveaux : communes
+  (classement en barres ou carte, clic sur une barre, un cercle ou choix dans la liste) →
+  évolution par année, sections et surface achetable dans la commune → ventes individuelles
+  d'une section.
 - *Ce prix est-il raisonnable ?* : on décrit un bien et son prix demandé ; l'application donne
   l'estimation du modèle, l'écart en %, et les 10 ventes comparables les plus proches.
 
@@ -61,6 +63,12 @@ fichier a été relu et peut être expliqué par chaque membre du groupe.
 - téléphone : indication que les filtres sont dans le panneau latéral (replié sur mobile) ;
   formulaire réordonné pour décrire le bien avant de saisir le prix demandé ;
 - audit d'accessibilité de l'autre groupe : TODO ;
+- carte des communes (`calculs.carte_communes()`) : un cercle par commune, taille = nombre de
+  ventes, couleur = tranche de prix médian au m² (4 tranches écrites dans la légende, couleurs
+  Okabe-Ito de contraste >= 3:1 sur le fond de carte) ; un clic sur un cercle ouvre la commune
+  comme un clic sur une barre ; le classement en barres reste l'alternative textuelle ;
+- « Surface pour notre budget » (`calculs.surface_pour_budget()`) : budget ÷ prix médian au m²,
+  en indicateur général, au survol de chaque commune et dans le détail de la commune ;
 - vérifié depuis un clone propre (`uv sync` puis `streamlit run` lancé depuis un autre
   dossier) : aucun chemin ne dépend du dossier courant.
 
