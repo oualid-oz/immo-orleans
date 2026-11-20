@@ -51,7 +51,18 @@ fichier a été relu et peut être expliqué par chaque membre du groupe.
   Maison ≠ Appartement, jamais de groupe sous `n_min`) et que le modèle bat la référence ;
 - « Méthode et limites » et la source restent visibles même quand les filtres ne donnent
   aucune vente ;
-- retours de la revue de 11 h 55 : TODO.
+- retours de la revue de 11 h 55 : TODO ;
+- accessibilité : la courbe d'évolution passe de l'orange Okabe-Ito (#E69F00, contraste 2,2:1
+  sur blanc, sous le minimum de 3:1) au vermillon #D55E00 (3,9:1 sur fond clair, 4,9:1 sur
+  fond sombre) ; tailles de texte des graphiques fixées explicitement à 12 px minimum (axes,
+  étiquettes, survol) ; titres sur deux lignes pour ne pas être coupés sur téléphone ; texte
+  `alt=` sur les 3 tableaux en plus des 2 graphiques ; « Prix stables » au lieu de « en baisse
+  de 0 % » quand la variation est inférieure à 1 % ;
+- téléphone : indication que les filtres sont dans le panneau latéral (replié sur mobile) ;
+  formulaire réordonné pour décrire le bien avant de saisir le prix demandé ;
+- audit d'accessibilité de l'autre groupe : TODO ;
+- vérifié depuis un clone propre (`uv sync` puis `streamlit run` lancé depuis un autre
+  dossier) : aucun chemin ne dépend du dossier courant.
 
 **Lancer** :
 

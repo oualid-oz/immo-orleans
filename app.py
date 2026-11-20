@@ -16,14 +16,30 @@ from calculs import (
 )
 from modele import charger_metriques, charger_modele, predire
 
-BLEU = "#0072B2"  # Okabe-Ito
-ORANGE = "#E69F00"  # Okabe-Ito
+# Couleurs Okabe-Ito choisies pour leur contraste (>= 3:1 sur fond clair et sombre).
+# L'orange #E69F00 n'est qu'à 2,2:1 sur blanc : on prend le vermillon.
+BLEU = "#0072B2"
+VERMILLON = "#D55E00"
 NB_COMMUNES = 20
+TAILLE_TEXTE = 12  # px, minimum pour tout le texte des graphiques
 
 
 def nombre(x: float) -> str:
     """Formate un nombre à la française : 1 234."""
     return f"{x:,.0f}".replace(",", " ")
+
+
+def lisible(fig):
+    """Tailles de texte explicites (>= 12 px) : le thème Streamlit ne peut pas les réduire."""
+    fig.update_layout(
+        font_size=TAILLE_TEXTE,
+        title_font_size=16,
+        hoverlabel_font_size=TAILLE_TEXTE,
+    )
+    fig.update_xaxes(tickfont_size=TAILLE_TEXTE, title_font_size=TAILLE_TEXTE)
+    fig.update_yaxes(tickfont_size=TAILLE_TEXTE, title_font_size=TAILLE_TEXTE)
+    fig.update_traces(textfont_size=TAILLE_TEXTE)
+    return fig
 
 
 # ---------- Données et agrégats en cache ----------
@@ -130,17 +146,18 @@ with onglet_prix:
     )
     with st.form("form_prix"):
         col_a, col_b = st.columns(2)
+        # Sur téléphone les colonnes s'empilent : on décrit le bien d'abord, le prix en dernier.
         with col_a:
             st.radio("Type de bien", ["Maison", "Appartement"], key="prix_type", horizontal=True)
             noms = sorted(codes_communes)
             st.selectbox("Commune", noms, index=noms.index("Orléans"), key="prix_commune")
+            st.number_input("Surface habitable (m²)", 9, 400, 90, key="prix_surface")
+        with col_b:
+            st.number_input("Pièces principales", 1, 15, 4, key="prix_pieces")
+            st.number_input("Terrain (m², 0 si aucun)", 0, 100_000, 0, step=50, key="prix_terrain")
             st.number_input(
                 "Prix demandé (€)", 10_000, 2_000_000, 200_000, step=5_000, key="prix_demande"
             )
-        with col_b:
-            st.number_input("Surface habitable (m²)", 9, 400, 90, key="prix_surface")
-            st.number_input("Pièces principales", 1, 15, 4, key="prix_pieces")
-            st.number_input("Terrain (m², 0 si aucun)", 0, 100_000, 0, step=50, key="prix_terrain")
         if st.form_submit_button("Estimer", key="prix_estimer"):
             st.session_state["prix_soumis"] = True
 
@@ -195,6 +212,10 @@ with onglet_prix:
             st.dataframe(
                 proches,
                 key="table_comparables",
+                alt=(
+                    f"Tableau des {len(proches)} ventes comparables à {etat['prix_commune']} : "
+                    "date, section, surface, pièces, terrain, prix et prix au m²."
+                ),
                 hide_index=True,
                 column_config={
                     "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
@@ -216,6 +237,10 @@ with onglet_prix:
 # ---------- Onglet 1 : où chercher ? ----------
 
 with onglet_communes:
+    st.caption(
+        "Budget, surface, type et années se règlent dans le panneau « Nos critères » "
+        "(sur téléphone : bouton › en haut à gauche)."
+    )
     vue = vue_filtree(type_bien, budget_max, surface_min, annees)
 
     if vue.empty:
@@ -239,10 +264,11 @@ with onglet_communes:
 
     top = communes.head(NB_COMMUNES)
     moins_chere = top.iloc[0]
-    titre = (
+    constat = (
         f"{moins_chere['nom_commune']} : {nombre(moins_chere['prix_m2_med'])} €/m² médian "
-        f"sur {moins_chere['n']} ventes, la moins chère"
+        f"sur {moins_chere['n']} ventes"
     )
+    titre = f"{constat}, la moins chère"
     etiquettes = [f"{nombre(p)} €/m² ({n} ventes)" for p, n in zip(top["prix_m2_med"], top["n"])]
     fig = px.bar(
         top.assign(etiquette=etiquettes),
@@ -250,18 +276,19 @@ with onglet_communes:
         y="nom_commune",
         orientation="h",
         text="etiquette",
-        title=titre,
+        # Plotly ne coupe pas les titres : retour à la ligne pour les écrans étroits.
+        title=f"{constat},<br>la moins chère",
         labels={"prix_m2_med": "Prix médian (€/m²)", "nom_commune": "Commune", "n": "Ventes"},
         hover_data={"n": True, "prix_med": ":,.0f", "etiquette": False},
         color_discrete_sequence=[BLEU],
     )
-    fig.update_traces(textposition="outside", textfont_size=12)
+    fig.update_traces(textposition="outside")
     fig.update_layout(
         yaxis={"categoryorder": "total descending"},  # la moins chère en haut
-        font_size=12,
         height=650,
         margin={"r": 170},
     )
+    lisible(fig)
 
     st.subheader(f"Les {len(top)} communes les moins chères au m²")
     st.caption(
@@ -305,25 +332,33 @@ with onglet_communes:
         if tend is None:
             st.info(f"Pas assez d'années avec au moins {n_min} ventes pour montrer une évolution.")
         else:
-            sens = "en baisse" if tend["variation_pct"] < 0 else "en hausse"
-            titre_evo = (
-                f"Prix {sens} de {abs(tend['variation_pct']):.0f} % entre {tend['debut']} et "
-                f"{tend['fin']} ({nombre(tend['prix_debut'])} → {nombre(tend['prix_fin'])} €/m², "
-                f"{nombre(evo['n'].sum())} ventes)"
+            variation = tend["variation_pct"]
+            if abs(variation) < 1:
+                sens = "Prix stables"  # sinon on écrirait « en baisse de 0 % »
+            elif variation < 0:
+                sens = f"Prix en baisse de {abs(variation):.0f} %"
+            else:
+                sens = f"Prix en hausse de {variation:.0f} %"
+            periode = f"{sens} entre {tend['debut']} et {tend['fin']}"
+            detail = (
+                f"{nombre(tend['prix_debut'])} → {nombre(tend['prix_fin'])} €/m², "
+                f"{nombre(evo['n'].sum())} ventes"
             )
+            titre_evo = f"{periode} ({detail})"
             fig_evo = px.line(
                 evo,
                 x="annee",
                 y="prix_m2_med",
                 markers=True,
                 text=[f"{n} ventes" for n in evo["n"]],
-                title=titre_evo,
+                title=f"{periode}<br>({detail})",  # sur deux lignes : colonne étroite
                 labels={"annee": "Année", "prix_m2_med": "Prix médian (€/m²)", "n": "Ventes"},
                 hover_data={"n": True},
-                color_discrete_sequence=[ORANGE],
+                color_discrete_sequence=[VERMILLON],
             )
-            fig_evo.update_traces(textposition="top center", textfont_size=12, marker_size=10)
-            fig_evo.update_layout(font_size=12, xaxis={"dtick": 1})
+            fig_evo.update_traces(textposition="top center", marker_size=10)
+            fig_evo.update_layout(xaxis={"dtick": 1})
+            lisible(fig_evo)
             st.plotly_chart(
                 fig_evo,
                 key="evolution",
@@ -343,6 +378,10 @@ with onglet_communes:
             st.dataframe(
                 sections,
                 key="table_sections",
+                alt=(
+                    f"Tableau des {len(sections)} sections cadastrales ({commune}) : "
+                    "nombre de ventes, prix médian au m² et prix médian."
+                ),
                 hide_index=True,
                 column_config={
                     "section": "Section",
@@ -368,6 +407,7 @@ with onglet_communes:
         st.dataframe(
             ventes,
             key="table_ventes",
+            alt=f"Tableau des {len(ventes)} ventes de la section {section} à {commune}.",
             hide_index=True,
             column_config={
                 "Date": st.column_config.DateColumn("Date", format="DD/MM/YYYY"),
