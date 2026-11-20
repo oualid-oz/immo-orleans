@@ -9,6 +9,17 @@ wheels/
 # Virtual environments
 .venv
 
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
 .streamlit/secrets.toml
 .env
-__pycache__/
+
+# Coding assistant local files (skills, settings)
+.agents/
+.claude/
+
+# Sprint and project management
+SPRINTS.md
