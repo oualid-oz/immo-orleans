@@ -2,9 +2,13 @@
 
 import plotly.express as px
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
+from assistant import MODELE_PAR_DEFAUT, reponse_en_flux
 from calculs import (
     carte_communes,
+    carte_comparables,
+    carte_sections,
     charger,
     comparables,
     evolution,
@@ -47,6 +51,40 @@ def lisible(fig):
     return fig
 
 
+def figure_carte(donnees, nom, titre, survol, etiquettes, zoom, couleur="tranche", couleurs=None):
+    """Carte à cercles, commune aux trois cartes de l'application.
+
+    Un cercle par ligne de `donnees` (colonnes latitude, longitude, n) : taille = nombre de ventes,
+    couleur = `couleur` (une catégorie écrite dans la légende, jamais la couleur seule).
+    `nom` est la colonne affichée au survol et renvoyée au clic (customdata).
+    """
+    fig = px.scatter_map(
+        donnees,
+        lat="latitude",
+        lon="longitude",
+        color=couleur,
+        size="n",
+        size_max=30,
+        hover_name=nom,
+        hover_data={**survol, couleur: False, "latitude": False, "longitude": False},
+        custom_data=[nom],
+        labels=etiquettes,
+        # Ordre de la légende = ordre des lignes (de la moins chère à la plus chère).
+        category_orders={couleur: list(dict.fromkeys(donnees[couleur]))},
+        color_discrete_sequence=couleurs or COULEURS_CARTE,
+        map_style="carto-positron",
+        zoom=zoom,
+        center={"lat": donnees["latitude"].median(), "lon": donnees["longitude"].median()},
+        title=titre,
+    )
+    fig.update_layout(height=550, legend={"title": etiquettes.get(couleur, "")})
+    return lisible(fig)
+
+
+# Sur téléphone, le doigt doit faire défiler la page, pas zoomer dans la carte.
+CONFIG_CARTE = {"scrollZoom": False}
+
+
 # ---------- Données et agrégats en cache ----------
 
 
@@ -83,6 +121,11 @@ def sections_cache(vue, commune, n_min):
 
 
 @st.cache_data
+def carte_sections_cache(vue, commune, n_min):
+    return carte_sections(vue, commune, n_min)
+
+
+@st.cache_data
 def evolution_cache(vue, n_min):
     return evolution(vue, n_min)
 
@@ -92,8 +135,8 @@ def evolution_cache(vue, n_min):
 st.set_page_config(page_title="Immo Orléans", layout="wide")
 st.title("Où acheter autour d'Orléans avec notre budget ?")
 
-onglet_communes, onglet_prix = st.tabs(
-    ["Où chercher ?", "Ce prix est-il raisonnable ?"], key="onglets"
+onglet_communes, onglet_prix, onglet_assistant = st.tabs(
+    ["Où chercher ?", "Ce prix est-il raisonnable ?", "Assistant"], key="onglets"
 )
 pied = st.container()  # sous les onglets
 
@@ -223,6 +266,50 @@ with onglet_prix:
                 f"({nombre(proches['Prix (€/m²)'].median())} €/m²)"
             )
             st.caption("Même commune, même type, surface à ± 20 %, les plus proches en surface.")
+
+            # Carte : les comparables regroupés par section (jamais une vente seule, voir
+            # calculs.carte_comparables), colorés selon leur prix médian face au prix demandé.
+            commune_prix = etat["prix_commune"]
+            par_section_prix = carte_comparables(df, commune_prix, proches, etat["prix_demande"])
+            moins_chers = int((proches["Prix (€)"] < etat["prix_demande"]).sum())
+            if not par_section_prix.empty:
+                constat = (
+                    f"{moins_chers} comparables sur {len(proches)} moins chers que le prix "
+                    f"demandé ({nombre(etat['prix_demande'])} €)"
+                )
+                suite = f"répartis dans {len(par_section_prix)} sections ({commune_prix})"
+                fig_prix = figure_carte(
+                    par_section_prix,
+                    nom="section",
+                    titre=f"{constat},<br>{suite}",
+                    survol={"n": True, "prix_med": ":,.0f"},
+                    etiquettes={
+                        "section": "Section",
+                        "n": "Comparables",
+                        "prix_med": "Prix médian des comparables (€)",
+                        "position_prix": "Prix médian des comparables de la section",
+                    },
+                    zoom=11.5,
+                    couleur="position_prix",
+                    # bleu = moins cher, vermillon = au prix ou plus cher (Okabe-Ito, contrastés)
+                    couleurs=[BLEU, VERMILLON],
+                )
+                st.plotly_chart(
+                    fig_prix,
+                    key="carte_comparables",
+                    alt=(
+                        f"Carte des sections ({commune_prix}) où se trouvent les ventes "
+                        f"comparables, cercle dimensionné selon leur nombre, bleu si leur prix "
+                        f"médian est sous le prix demandé, vermillon sinon. {constat}, {suite}."
+                    ),
+                    config=CONFIG_CARTE,
+                )
+            nb_places = int(par_section_prix["n"].sum()) if not par_section_prix.empty else 0
+            if nb_places < len(proches):
+                st.caption(
+                    f"{len(proches) - nb_places} comparable(s) non placé(s) sur la carte : leur "
+                    f"section compte moins de 5 ventes, sa position serait presque une adresse."
+                )
             st.dataframe(
                 proches,
                 key="table_comparables",
@@ -247,6 +334,53 @@ with onglet_prix:
         f"{nombre(metriques['reference']['erreur_mediane'])} € pour la référence "
         "(médiane €/m² de la commune et du type × surface), validation croisée 5 plis."
     )
+
+# ---------- Onglet 3 : assistant (IA + serveur MCP), rempli avant les st.stop de l'onglet 1 ----------
+
+
+def secret(nom: str) -> str | None:
+    """Un secret de .streamlit/secrets.toml (local) ou des Secrets de Streamlit Cloud."""
+    try:
+        return st.secrets.get(nom)
+    except StreamlitSecretNotFoundError:  # aucun fichier de secrets
+        return None
+
+
+with onglet_assistant:
+    modele = secret("GROQ_MODEL") or MODELE_PAR_DEFAUT
+    st.caption(
+        f"Posez une question sur les ventes du Loiret. Les réponses sont écrites par une IA "
+        f"(modèle {modele}, via Groq) à partir des chiffres de cette application, qu'elle lit "
+        f"avec les outils du serveur MCP serveur_mcp.py. Vos questions sont envoyées à Groq. "
+        "Exemples : « Quelles communes ont une maison médiane sous 1 500 €/m² ? », "
+        "« Maison de 100 m² et 5 pièces à Olivet à 280 000 €, c'est raisonnable ? »"
+    )
+    cle = secret("GROQ_API_KEY")
+    if not cle:
+        st.info(
+            "Ajoutez GROQ_API_KEY dans .streamlit/secrets.toml (en local) ou dans les "
+            "Secrets de l'application sur Streamlit Cloud. Le reste de l'application fonctionne.",
+            title="Assistant non configuré",
+        )
+    else:
+        conversation = st.session_state.setdefault("conversation", [])
+        for message in conversation:
+            with st.chat_message(message["role"]):
+                st.markdown(message["content"])
+
+        question = st.chat_input("Votre question…", key="question", max_chars=1_000)
+        if question:
+            conversation.append({"role": "user", "content": question})
+            with st.chat_message("user"):
+                st.markdown(question)
+            with st.chat_message("assistant"):
+                # La réponse s'affiche pendant qu'elle s'écrit (voir assistant.py).
+                reponse = st.write_stream(reponse_en_flux(conversation, cle, modele))
+            conversation.append({"role": "assistant", "content": reponse})
+
+        if conversation and st.button("Nouvelle conversation", key="effacer_conversation"):
+            st.session_state["conversation"] = []
+            st.rerun()
 
 # ---------- Onglet 1 : où chercher ? ----------
 
@@ -283,8 +417,8 @@ with onglet_communes:
 
     affichage = st.segmented_control(
         "Affichage des communes",
-        ["Classement", "Carte"],
-        default="Classement",
+        ["Carte", "Classement"],
+        default="Carte",  # la carte d'abord ; le classement reste l'alternative en texte
         required=True,
         key="affichage",
     )
@@ -299,46 +433,26 @@ with onglet_communes:
         )
         suite = f"à {nombre(plus_chere['prix_m2_med'])} €/m² ({plus_chere['nom_commune']})"
         titre = f"{constat} {suite}"
-        fig = px.scatter_map(
+        fig = figure_carte(
             carte,
-            lat="latitude",
-            lon="longitude",
-            color="tranche",
-            size="n",
-            size_max=30,
-            hover_name="nom_commune",
-            hover_data={
-                "prix_m2_med": ":,.0f",
-                "n": True,
-                "surface_budget": ":.0f",
-                "tranche": False,
-                "latitude": False,
-                "longitude": False,
-            },
-            custom_data=["nom_commune"],
-            labels={
+            nom="nom_commune",
+            titre=f"{constat}<br>{suite}",
+            survol={"prix_m2_med": ":,.0f", "n": True, "surface_budget": ":.0f"},
+            etiquettes={
                 "prix_m2_med": "Prix médian (€/m²)",
                 "n": "Ventes",
                 "surface_budget": "m² pour notre budget",
                 "tranche": "Prix médian au m²",
             },
-            # Ordre des tranches = ordre des lignes (de la moins chère à la plus chère).
-            category_orders={"tranche": list(dict.fromkeys(carte["tranche"]))},
-            color_discrete_sequence=COULEURS_CARTE,
-            map_style="carto-positron",
             zoom=7.5,
-            center={"lat": carte["latitude"].median(), "lon": carte["longitude"].median()},
-            title=f"{constat}<br>{suite}",
         )
-        fig.update_layout(height=650, legend={"title": "Prix médian au m²"})
-        lisible(fig)
         aide = "Cliquez sur un cercle pour voir le détail de la commune, ou choisissez-la plus bas."
         alt = (
             f"Carte des communes du Loiret, chaque cercle coloré selon sa tranche de prix médian "
             f"au m² (du bleu, la moins chère, au noir) et dimensionné selon le nombre de ventes. "
             f"{titre}."
         )
-        config = {"scrollZoom": False}  # sur téléphone, le doigt fait défiler la page, pas la carte
+        config = CONFIG_CARTE
     else:
         top = communes.head(NB_COMMUNES)
         moins_chere = top.iloc[0]
@@ -426,6 +540,55 @@ with onglet_communes:
         "critères. Indicatif : sans les frais de notaire (environ 7 à 8 % dans l'ancien) ni travaux."
     )
 
+    # Carte des sections cadastrales : un clic sur une section filtre les ventes (niveau 3).
+    cle_section = f"section_{commune}"  # une clé par commune : « AB » à Gien n'est pas « AB » ici
+    sections_carte = carte_sections_cache(vue, commune, n_min)
+    if not sections_carte.empty:
+        moins_chere = sections_carte.iloc[0]
+        plus_chere = sections_carte.iloc[-1]
+        constat = (
+            f"{commune} : {len(sections_carte)} sections, {nombre(sections_carte['n'].sum())} "
+            f"ventes, de {nombre(moins_chere['prix_m2_med'])} €/m² (section "
+            f"{moins_chere['section']})"
+        )
+        suite = f"à {nombre(plus_chere['prix_m2_med'])} €/m² (section {plus_chere['section']})"
+        fig_sections = figure_carte(
+            sections_carte,
+            nom="section",
+            titre=f"{constat}<br>{suite}",
+            survol={"prix_m2_med": ":,.0f", "n": True, "prix_med": ":,.0f"},
+            etiquettes={
+                "section": "Section",
+                "prix_m2_med": "Prix médian (€/m²)",
+                "n": "Ventes",
+                "prix_med": "Prix médian (€)",
+                "tranche": "Prix médian au m²",
+            },
+            zoom=11.5,
+        )
+        st.caption(
+            "Cliquez sur une section pour filtrer les ventes plus bas, ou choisissez-la dans la "
+            "liste « Section cadastrale ». Cercle = position médiane des ventes de la section."
+        )
+        evenement_section = st.plotly_chart(
+            fig_sections,
+            on_select="rerun",
+            selection_mode="points",
+            key=f"carte_sections_{commune}",
+            alt=(
+                f"Carte des sections cadastrales ({commune}), chaque cercle coloré selon sa "
+                f"tranche de prix médian au m² (du bleu, la moins chère, au noir) et "
+                f"dimensionné selon le nombre de ventes. {constat} {suite}."
+            ),
+            config=CONFIG_CARTE,
+        )
+        # Même principe que pour les communes : un nouveau clic choisit la section.
+        points = evenement_section.selection.points
+        clic_section = points[0]["customdata"][0] if points else None
+        if clic_section and clic_section != st.session_state.get("dernier_clic_section"):
+            st.session_state[cle_section] = clic_section
+        st.session_state["dernier_clic_section"] = clic_section
+
     col_evo, col_sections = st.columns(2)
 
     with col_evo:
@@ -499,8 +662,6 @@ with onglet_communes:
 
     if not sections.empty:
         options_sections = list(sections["section"])
-        # Une clé par commune : la section "AB" de Gien n'est pas celle d'Orléans.
-        cle_section = f"section_{commune}"
         if st.session_state.get(cle_section) not in options_sections:
             st.session_state[cle_section] = options_sections[0]
         section = st.selectbox("Section cadastrale", options_sections, key=cle_section)

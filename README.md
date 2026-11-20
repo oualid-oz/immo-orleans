@@ -14,15 +14,56 @@ masqués. La section cadastrale est le niveau le plus fin (pas d'adresse). DVF n
 l'état, ni l'étage, ni le DPE.
 
 **Framework** : Streamlit + Plotly Express + pandas + scikit-learn, Python 3.12, géré avec `uv`.
-Deux onglets :
+Assistant : modèle de langage via l'API Groq (SDK `openai`) + serveur MCP (`mcp`). Trois onglets :
 
 - *Où chercher ?* : filtres (type, budget, surface, années, ventes minimum), 4 indicateurs
   dont la surface que le budget permet d'acheter, puis exploration en 3 niveaux : communes
-  (classement en barres ou carte, clic sur une barre, un cercle ou choix dans la liste) →
-  évolution par année, sections et surface achetable dans la commune → ventes individuelles
-  d'une section.
+  (carte par défaut, ou classement en barres ; clic sur un cercle, une barre ou choix dans la
+  liste) → dans la commune : carte des sections cadastrales, évolution par année, tableau des
+  sections et surface achetable → ventes individuelles d'une section (clic sur la carte des
+  sections ou choix dans la liste).
 - *Ce prix est-il raisonnable ?* : on décrit un bien et son prix demandé ; l'application donne
-  l'estimation du modèle, l'écart en %, et les 10 ventes comparables les plus proches.
+  l'estimation du modèle, l'écart en %, une carte des sections où se trouvent les 10 ventes
+  comparables les plus proches (bleu si moins chères que le prix demandé), et leur tableau.
+- *Assistant* : on pose une question en français ; un modèle de langage (via Groq) répond
+  avec les chiffres de l'application, qu'il lit avec les outils d'un serveur MCP (voir
+  ci-dessous).
+
+**Assistant et serveur MCP** :
+
+```text
+onglet Assistant (app.py) → assistant.py ──(clé GROQ_API_KEY)──→ API Groq (format OpenAI)
+                                │  client MCP, transport stdio
+                                ↓
+                       serveur_mcp.py : 6 outils en lecture seule
+                                ↓  appellent calculs.py et modele.py
+                       mêmes médianes et nombres de ventes que les autres onglets
+```
+
+- `serveur_mcp.py` : serveur MCP (Model Context Protocol) avec 6 outils : chercher une commune
+  (sans accents ni tirets), chiffres clés, communes les moins chères, détail d'une commune,
+  estimation d'un prix, erreur du modèle. Ils vérifient leurs paramètres et renvoient une
+  erreur lisible par le modèle (avec suggestions pour une commune mal orthographiée).
+- `assistant.py` : à chaque question, lance le serveur, lit ses outils et les donne au modèle
+  au format « function calling » d'OpenAI. Boucle écrite à la main (8 tours au plus) : le
+  modèle demande des outils, on les exécute sur le serveur MCP, on lui renvoie les résultats,
+  jusqu'à sa réponse finale, qui s'affiche pendant qu'elle s'écrit. Groq est compatible avec
+  l'API d'OpenAI : SDK officiel `openai`, adresse `https://api.groq.com/openai/v1`. Pas
+  d'import Streamlit.
+- Modèle : `openai/gpt-oss-120b` par défaut ; un autre modèle Groq qui sait appeler des outils
+  se choisit avec `GROQ_MODEL` dans les secrets (liste : console.groq.com/docs/models).
+- Clé : `GROQ_API_KEY` dans `.streamlit/secrets.toml` (modèle :
+  `.streamlit/secrets.toml.example`, le vrai fichier est ignoré par git), ou dans les Secrets
+  de l'application sur Streamlit Cloud. Sans clé, l'onglet l'explique et le reste marche.
+- Coût et limites : chaque question est facturée (ou décomptée du quota gratuit) sur le compte
+  Groq de la clé ; question de 1 000 caractères, 12 derniers messages, 8 tours d'outils et
+  8 000 jetons de réponse au plus par tour. Les questions sont envoyées à Groq. Le serveur MCP
+  met environ 4 s à démarrer à chaque question (pandas, données, modèle).
+- Tests sans clé ni réseau : `tests/test_assistant.py` remplace Groq par un faux serveur local
+  et vérifie la boucle (appel d'outil reçu en morceaux, exécuté sur le vrai serveur MCP,
+  résultat renvoyé au modèle, réponse finale).
+- Le même serveur MCP marche aussi dans Claude Code :
+  `claude mcp add immo-orleans -- uv run --project /chemin/immo-orleans python /chemin/immo-orleans/serveur_mcp.py`
 
 **Couche ML** : `scripts/train.py` (lancé une fois, pas par l'application) entraîne un
 `HistGradientBoostingRegressor` (one-hot sur le type et la commune) qui prédit le log du prix
@@ -70,7 +111,18 @@ fichier a été relu et peut être expliqué par chaque membre du groupe.
 - « Surface pour notre budget » (`calculs.surface_pour_budget()`) : budget ÷ prix médian au m²,
   en indicateur général, au survol de chaque commune et dans le détail de la commune ;
 - vérifié depuis un clone propre (`uv sync` puis `streamlit run` lancé depuis un autre
-  dossier) : aucun chemin ne dépend du dossier courant.
+  dossier) : aucun chemin ne dépend du dossier courant ;
+- cartes d'abord : la carte des communes est l'affichage par défaut (le classement en barres
+  reste l'alternative en texte) ; carte des sections cadastrales de la commune choisie, dont un
+  clic filtre les ventes (`calculs.carte_sections()`) ; dans « Ce prix est-il raisonnable ? »,
+  carte des comparables regroupés par section (`calculs.carte_comparables()`). Aucune vente
+  n'est placée seule (ce serait presque une adresse) : un cercle = une section, à la position
+  médiane de toutes ses ventes, seulement si elle en compte au moins 5. Les trois cartes
+  partagent `figure_carte()` (couleurs Okabe-Ito, légende écrite, texte `alt`, pas de zoom à la
+  molette pour ne pas bloquer le défilement sur téléphone) ;
+- onglet « Assistant » : un modèle de langage via Groq répond avec les outils du serveur MCP
+  `serveur_mcp.py` (`assistant.py`) ; 8 tests du serveur dont un par stdio comme dans
+  l'application, 2 tests de la boucle de l'assistant avec un faux Groq local.
 
 **Lancer** :
 

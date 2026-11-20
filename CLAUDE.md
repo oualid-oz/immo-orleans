@@ -33,6 +33,14 @@ Data rules:
 - Accessibility: Okabe-Ito colours, never colour alone, text >= 12 px, `alt=` on every
   `st.plotly_chart`, chart titles state the finding and its number of sales.
 - Secrets only in `.streamlit/secrets.toml` (git-ignored).
+- Assistant tab: `serveur_mcp.py` = MCP server (MCP Python SDK 2.x: `MCPServer`, not
+  `FastMCP`), tools call `calculs.py` / `modele.py`, never new calculation logic; a new tool
+  needs a test in `tests/test_serveur_mcp.py`. `assistant.py` = LLM via Groq's
+  OpenAI-compatible API (`openai` SDK, `base_url=https://api.groq.com/openai/v1`, key
+  `GROQ_API_KEY`, optional `GROQ_MODEL`) + MCP client + hand-written tool loop, no streamlit
+  import; `app.py` only displays (`st.write_stream(reponse_en_flux(...))`). The MCP
+  connection must open and close in one asyncio task: keep the thread + queue in
+  `reponse_en_flux`, never pass an async generator holding it to `st.write_stream`.
 - Before finishing a task: `uv run ruff check . && uv run ruff format . && uv run pytest -q`.
 
 ## Run

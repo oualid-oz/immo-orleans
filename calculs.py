@@ -151,14 +151,64 @@ def carte_communes(vue: pd.DataFrame, n_min: int = 10) -> pd.DataFrame:
     """
     communes = par_commune(vue, n_min)
     positions = vue.groupby("nom_commune")[["latitude", "longitude"]].median().reset_index()
-    resultat = communes.merge(positions, on="nom_commune")
-    if resultat["prix_m2_med"].nunique() < 4:
-        resultat["tranche"] = "toutes les communes"
-        return resultat
-    classes, bornes = pd.qcut(resultat["prix_m2_med"], 4, retbins=True, duplicates="drop")
+    return _avec_tranches(communes.merge(positions, on="nom_commune"), "toutes les communes")
+
+
+def _avec_tranches(groupes: pd.DataFrame, libelle_unique: str) -> pd.DataFrame:
+    """Ajoute la colonne tranche : quart des prix médians au m², avec ses bornes en texte
+    (« 787 à 1 393 €/m² »). Moins de 4 prix différents : une seule tranche."""
+    groupes = groupes.copy()
+    if groupes["prix_m2_med"].nunique() < 4:
+        groupes["tranche"] = libelle_unique
+        return groupes
+    classes, bornes = pd.qcut(groupes["prix_m2_med"], 4, retbins=True, duplicates="drop")
     noms = [f"{_nombre(bornes[i])} à {_nombre(bornes[i + 1])} €/m²" for i in range(len(bornes) - 1)]
-    resultat["tranche"] = [noms[code] for code in classes.cat.codes]
-    return resultat
+    groupes["tranche"] = [noms[code] for code in classes.cat.codes]
+    return groupes
+
+
+def carte_sections(vue: pd.DataFrame, commune: str, n_min: int = 10) -> pd.DataFrame:
+    """Une ligne par section cadastrale de la commune, pour la carte : médianes, position, tranche.
+
+    Mêmes sections que par_section (au moins n_min ventes), de la moins chère à la plus chère.
+    Position = médiane des coordonnées des ventes de la section (jamais une vente seule).
+    """
+    sections = par_section(vue, commune, n_min)
+    dans_commune = vue[vue["nom_commune"] == commune]
+    positions = dans_commune.groupby("section")[["latitude", "longitude"]].median().reset_index()
+    resultat = sections.merge(positions, on="section").dropna(subset=["latitude", "longitude"])
+    return _avec_tranches(resultat.reset_index(drop=True), "toutes les sections")
+
+
+VENTES_MIN_POSITION = 5  # une section de moins de 5 ventes n'est pas placée sur la carte
+
+
+def carte_comparables(
+    df: pd.DataFrame, commune: str, proches: pd.DataFrame, prix_demande: float
+) -> pd.DataFrame:
+    """Les ventes comparables (résultat de comparables()) regroupées par section, pour la carte.
+
+    On ne place jamais une vente seule (ce serait presque une adresse) : chaque cercle est une
+    section, à la position médiane de TOUTES ses ventes, et seulement si elle en compte au moins
+    VENTES_MIN_POSITION. Colonnes : section, n (comparables), prix_med (leur prix médian),
+    latitude, longitude, position_prix (moins cher que le prix demandé ou non).
+    """
+    dans_commune = df[df["nom_commune"] == commune]
+    nb_ventes = dans_commune.groupby("section").size()
+    positions = dans_commune.groupby("section")[["latitude", "longitude"]].median()
+    positions = positions[nb_ventes >= VENTES_MIN_POSITION].reset_index()
+    groupes = (
+        proches.groupby("Section")
+        .agg(n=("Prix (€)", "size"), prix_med=("Prix (€)", "median"))
+        .reset_index()
+        .rename(columns={"Section": "section"})
+    )
+    resultat = groupes.merge(positions, on="section").dropna(subset=["latitude", "longitude"])
+    resultat["position_prix"] = [
+        "moins cher que le prix demandé" if p < prix_demande else "au prix demandé ou plus cher"
+        for p in resultat["prix_med"]
+    ]
+    return resultat.sort_values("prix_med").reset_index(drop=True)
 
 
 def surface_pour_budget(communes: pd.DataFrame, budget: float) -> pd.DataFrame:

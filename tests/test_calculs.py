@@ -5,7 +5,10 @@ import pandas as pd
 import pytest
 
 from calculs import (
+    VENTES_MIN_POSITION,
     carte_communes,
+    carte_comparables,
+    carte_sections,
     charger,
     comparables,
     evolution,
@@ -163,3 +166,29 @@ def test_carte_communes(ventes):
     assert carte["tranche"].nunique() == 4
     assert carte["tranche"].iloc[0] != carte["tranche"].iloc[-1]
     assert carte["tranche"].value_counts().max() - carte["tranche"].value_counts().min() <= 1
+
+
+def test_carte_sections_memes_sections_que_le_tableau(ventes):
+    vue = filtrer(ventes, "Maison", 300_000, 0, (2021, 2025))
+    carte = carte_sections(vue, "Orléans", n_min=10)
+    tableau = par_section(vue, "Orléans", n_min=10)
+    assert list(carte["section"]) == list(
+        tableau["section"]
+    )  # même ordre, du moins cher au plus cher
+    assert (carte["n"] >= 10).all()
+    # positions dans Orléans, pas ailleurs dans le Loiret
+    assert carte["latitude"].between(47.8, 47.95).all()
+    assert carte["longitude"].between(1.8, 2.0).all()
+    assert carte["tranche"].nunique() == 4
+
+
+def test_carte_comparables_jamais_une_position_de_vente_seule(ventes):
+    proches = comparables(ventes, "Orléans", "Appartement", 60)
+    carte = carte_comparables(ventes, "Orléans", proches, 180_000)
+    nb_par_section = ventes[ventes["nom_commune"] == "Orléans"].groupby("section").size()
+    # chaque cercle = une section qui a assez de ventes pour que sa position ne trahisse personne
+    assert (nb_par_section[carte["section"]] >= VENTES_MIN_POSITION).all()
+    assert carte["n"].sum() <= len(proches)
+    # couleur cohérente avec le prix demandé
+    moins_chers = carte[carte["prix_med"] < 180_000]
+    assert (moins_chers["position_prix"] == "moins cher que le prix demandé").all()
