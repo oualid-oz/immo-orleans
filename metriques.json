@@ -1,0 +1,16 @@
+{
+  "nb_ventes": 46022,
+  "validation": "validation croisée 5 plis (KFold, shuffle, random_state=42)",
+  "modele": {
+    "mae": 40690.445652784394,
+    "erreur_mediane": 27232.548979840183,
+    "mape": 27.726102527745685,
+    "erreur_mediane_pct": 18.28477312399
+  },
+  "reference": {
+    "mae": 43559.91583049332,
+    "erreur_mediane": 29196.728098290594,
+    "mape": 30.588789602374305,
+    "erreur_mediane_pct": 19.538640202702712
+  }
+}

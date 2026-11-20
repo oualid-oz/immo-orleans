@@ -109,3 +109,29 @@ def ventes_section(vue: pd.DataFrame, commune: str, section: str) -> pd.DataFram
         .rename(columns=colonnes)
         .reset_index(drop=True)
     )
+
+
+def comparables(
+    df: pd.DataFrame, commune: str, type_bien: str, surface: float, n: int = 10
+) -> pd.DataFrame:
+    """Les n ventes les plus proches : même commune, même type, surface à ±20 %.
+
+    Triées par écart de surface (la plus proche d'abord), puis de la plus récente à la plus ancienne.
+    """
+    proches = df[
+        (df["nom_commune"] == commune)
+        & (df["type"] == type_bien)
+        & (df["surface_reelle_bati"].between(0.8 * surface, 1.2 * surface))
+    ]
+    proches = proches.assign(ecart_surface=(proches["surface_reelle_bati"] - surface).abs())
+    proches = proches.sort_values(["ecart_surface", "date_mutation"], ascending=[True, False])
+    colonnes = {
+        "date_mutation": "Date",
+        "section": "Section",
+        "surface_reelle_bati": "Surface (m²)",
+        "nombre_pieces_principales": "Pièces",
+        "surface_terrain": "Terrain (m²)",
+        "valeur_fonciere": "Prix (€)",
+        "prix_m2": "Prix (€/m²)",
+    }
+    return proches.head(n)[list(colonnes)].rename(columns=colonnes).reset_index(drop=True)

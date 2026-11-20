@@ -1,6 +1,12 @@
+import json
+from pathlib import Path
+
 import pandas as pd
+import pytest
 
 from calculs import (
+    charger,
+    comparables,
     evolution,
     filtrer,
     indicateurs,
@@ -81,3 +87,57 @@ def test_ventes_section_plus_recentes_d_abord():
     ventes = ventes_section(petit_jeu(), "A", "AB")
     assert len(ventes) == 2
     assert ventes.loc[0, "Date"] == pd.Timestamp("2022-05-01")
+
+
+# ---------- Sur les vraies données : les filtres font vraiment leur travail ----------
+
+
+@pytest.fixture(scope="module")
+def ventes():
+    return charger()
+
+
+def test_maison_et_appartement_ont_des_medianes_differentes(ventes):
+    tout = (2021, 2025)
+    maisons = indicateurs(filtrer(ventes, "Maison", 2_000_000, 0, tout))
+    apparts = indicateurs(filtrer(ventes, "Appartement", 2_000_000, 0, tout))
+    assert maisons["prix_m2_median"] != apparts["prix_m2_median"]
+    assert maisons["prix_median"] != apparts["prix_median"]
+    # chaque vue ne contient que son type
+    assert set(filtrer(ventes, "Maison", 2_000_000, 0, tout)["type"]) == {"Maison"}
+
+
+@pytest.mark.parametrize("budget", [80_000, 150_000, 300_000])
+def test_budget_respecte(ventes, budget):
+    vue = filtrer(ventes, "Maison", budget, 0, (2021, 2025))
+    assert not vue.empty
+    assert (vue["valeur_fonciere"] <= budget).all()
+    # et le filtre enlève bien quelque chose : des maisons au-dessus du budget existent
+    assert len(vue) < (ventes["type"] == "Maison").sum()
+
+
+def test_surface_et_annees_respectees(ventes):
+    vue = filtrer(ventes, "Appartement", 2_000_000, 60, (2023, 2024))
+    assert (vue["surface_reelle_bati"] >= 60).all()
+    assert set(vue["annee"]) == {2023, 2024}
+
+
+@pytest.mark.parametrize("n_min", [1, 10, 50])
+def test_par_commune_jamais_sous_n_min(ventes, n_min):
+    res = par_commune(ventes, n_min)
+    assert (res["n"] >= n_min).all()
+    assert res["prix_m2_med"].is_monotonic_increasing
+
+
+def test_comparables(ventes):
+    res = comparables(ventes, "Orléans", "Appartement", 60)
+    assert len(res) == 10
+    assert res["Surface (m²)"].between(48, 72).all()
+    ecarts = (res["Surface (m²)"] - 60).abs()
+    assert ecarts.is_monotonic_increasing  # les plus proches d'abord
+
+
+def test_le_modele_bat_la_reference():
+    metriques = json.loads((Path(__file__).parent.parent / "metriques.json").read_text())
+    assert metriques["modele"]["erreur_mediane"] < metriques["reference"]["erreur_mediane"]
+    assert metriques["modele"]["mape"] < metriques["reference"]["mape"]
